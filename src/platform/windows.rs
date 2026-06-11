@@ -275,10 +275,33 @@ mod image_data {
 			);
 			result_bytes.set_len(read_len);
 
-			let result_bytes = win_to_rgba(&mut result_bytes);
+			let mut result_bytes = win_to_rgba(&mut result_bytes);
+			repair_missing_alpha_if_opaque_rgb(&mut result_bytes);
 
 			let result = ImageData::rgba(w as _, h as _, Cow::Owned(result_bytes));
 			Ok(result)
+		}
+	}
+
+	/// Some Windows screenshot tools put 32-bit DIB data on the clipboard with
+	/// the alpha byte left as zero for every pixel even though the RGB channels
+	/// contain the visible screenshot. Treat that as missing alpha rather than
+	/// as an intentionally fully transparent image.
+	fn repair_missing_alpha_if_opaque_rgb(bytes: &mut [u8]) -> bool {
+		debug_assert_eq!(bytes.len() % 4, 0);
+
+		let has_rgb_content = bytes
+			.chunks_exact(4)
+			.any(|pixel| pixel[0] != 0 || pixel[1] != 0 || pixel[2] != 0);
+		let all_alpha_zero = bytes.chunks_exact(4).all(|pixel| pixel[3] == 0);
+
+		if has_rgb_content && all_alpha_zero {
+			for pixel in bytes.chunks_exact_mut(4) {
+				pixel[3] = 255;
+			}
+			true
+		} else {
+			false
 		}
 	}
 
@@ -469,6 +492,34 @@ mod image_data {
 		let _converted = unsafe { rgba_to_win(&mut data) };
 		let _converted = unsafe { win_to_rgba(&mut data) };
 		assert_eq!(data, DATA);
+	}
+
+	#[test]
+	fn repairs_missing_alpha_when_rgb_has_content() {
+		let mut data = [255, 255, 255, 0, 20, 30, 40, 0, 0, 0, 0, 0];
+
+		assert!(repair_missing_alpha_if_opaque_rgb(&mut data));
+		assert_eq!(
+			data,
+			[255, 255, 255, 255, 20, 30, 40, 255, 0, 0, 0, 255]
+		);
+	}
+
+	#[test]
+	fn preserves_real_transparency() {
+		let mut data = [255, 0, 0, 0, 0, 255, 0, 128, 0, 0, 255, 255];
+		let before = data;
+
+		assert!(!repair_missing_alpha_if_opaque_rgb(&mut data));
+		assert_eq!(data, before);
+	}
+
+	#[test]
+	fn preserves_fully_empty_pixels() {
+		let mut data = [0; 12];
+
+		assert!(!repair_missing_alpha_if_opaque_rgb(&mut data));
+		assert_eq!(data, [0; 12]);
 	}
 }
 
