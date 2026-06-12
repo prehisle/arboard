@@ -583,7 +583,8 @@ mod image_data {
 		assert_eq!(data, [0; 12]);
 	}
 
-	fn test_dibv5(
+	#[cfg(test)]
+	fn dibv5_test_data(
 		width: usize,
 		height: usize,
 		compression: i32,
@@ -633,7 +634,7 @@ mod image_data {
 
 	#[test]
 	fn read_cf_dibv5_repairs_all_black_missing_alpha() {
-		let data = test_dibv5(2, 1, BI_RGB, 0, &[0, 0, 0, 0, 0, 0, 0, 0]);
+		let data = dibv5_test_data(2, 1, BI_RGB, 0, &[0, 0, 0, 0, 0, 0, 0, 0]);
 		let ImageData::Rgba(image) = read_cf_dibv5(&data).unwrap() else {
 			panic!("expected RGBA image");
 		};
@@ -645,7 +646,7 @@ mod image_data {
 
 	#[test]
 	fn read_cf_dibv5_preserves_declared_transparency() {
-		let data = test_dibv5(2, 1, BI_BITFIELDS, 0xff000000, &[0, 0, 255, 0, 0, 255, 0, 0]);
+		let data = dibv5_test_data(2, 1, BI_BITFIELDS, 0xff000000, &[0, 0, 255, 0, 0, 255, 0, 0]);
 		let ImageData::Rgba(image) = read_cf_dibv5(&data).unwrap() else {
 			panic!("expected RGBA image");
 		};
