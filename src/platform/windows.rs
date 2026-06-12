@@ -407,7 +407,7 @@ mod image_data {
 	/// Safety: the `bytes` slice must have a length that's a multiple of 4
 	#[allow(clippy::identity_op, clippy::erasing_op)]
 	#[must_use]
-	unsafe fn rgba_to_win(bytes: &mut [u8]) -> Cow<'_, [u8]> {
+	pub(super) unsafe fn rgba_to_win(bytes: &mut [u8]) -> Cow<'_, [u8]> {
 		// Check safety invariants to catch obvious bugs.
 		debug_assert_eq!(bytes.len() % 4, 0);
 
@@ -466,7 +466,7 @@ mod image_data {
 	/// Safety: the `bytes` slice must have a length that's a multiple of 4
 	#[allow(clippy::identity_op, clippy::erasing_op)]
 	#[must_use]
-	unsafe fn win_to_rgba(bytes: &mut [u8]) -> Vec<u8> {
+	pub(super) unsafe fn win_to_rgba(bytes: &mut [u8]) -> Vec<u8> {
 		// Check safety invariants to catch obvious bugs.
 		debug_assert_eq!(bytes.len() % 4, 0);
 
@@ -1189,10 +1189,32 @@ fn wrap_html(ctn: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-	use super::image_data::read_cf_dibv5;
+	use super::image_data::{read_cf_dibv5, rgba_to_win, win_to_rgba};
 	use crate::common::ImageData;
 	use std::mem::size_of;
 	use windows_sys::Win32::Graphics::Gdi::{BITMAPV5HEADER, BI_BITFIELDS, BI_RGB, LCS_GM_IMAGES};
+
+	#[test]
+	fn conversion_between_win_and_rgba() {
+		const DATA: [u8; 16] =
+			[100, 100, 255, 100, 0, 0, 0, 255, 255, 100, 100, 255, 100, 255, 100, 100];
+
+		let mut data = DATA;
+		let _converted = unsafe { win_to_rgba(&mut data) };
+
+		let mut data = DATA;
+		let _converted = unsafe { rgba_to_win(&mut data) };
+
+		let mut data = DATA;
+		let _converted = unsafe { win_to_rgba(&mut data) };
+		let _converted = unsafe { rgba_to_win(&mut data) };
+		assert_eq!(data, DATA);
+
+		let mut data = DATA;
+		let _converted = unsafe { rgba_to_win(&mut data) };
+		let _converted = unsafe { win_to_rgba(&mut data) };
+		assert_eq!(data, DATA);
+	}
 
 	fn dibv5_test_data(
 		width: usize,
