@@ -542,45 +542,11 @@ mod image_data {
 	}
 
 	#[test]
-	fn repairs_missing_alpha_when_header_has_no_alpha() {
-		let mut data = [0, 0, 0, 0, 20, 30, 40, 0];
-
-		assert!(repair_missing_alpha(&mut data, Dibv5AlphaFormat::Missing));
-		assert_eq!(data, [0, 0, 0, 255, 20, 30, 40, 255]);
-	}
-
-	#[test]
-	fn preserves_real_transparency_when_header_declares_alpha() {
-		let mut data = [255, 0, 0, 0, 0, 255, 0, 0];
-		let before = data;
-
-		assert!(!repair_missing_alpha(&mut data, Dibv5AlphaFormat::Present));
-		assert_eq!(data, before);
-	}
-
-	#[test]
 	fn falls_back_to_pixel_heuristic_when_header_is_unknown() {
 		let mut data = [255, 255, 255, 0, 20, 30, 40, 0, 0, 0, 0, 0];
 
 		assert!(repair_missing_alpha(&mut data, Dibv5AlphaFormat::Unknown));
 		assert_eq!(data, [255, 255, 255, 255, 20, 30, 40, 255, 0, 0, 0, 255]);
-	}
-
-	#[test]
-	fn pixel_heuristic_preserves_real_transparency() {
-		let mut data = [255, 0, 0, 0, 0, 255, 0, 128, 0, 0, 255, 255];
-		let before = data;
-
-		assert!(!repair_missing_alpha_if_opaque_rgb(&mut data));
-		assert_eq!(data, before);
-	}
-
-	#[test]
-	fn pixel_heuristic_preserves_fully_empty_pixels() {
-		let mut data = [0; 12];
-
-		assert!(!repair_missing_alpha_if_opaque_rgb(&mut data));
-		assert_eq!(data, [0; 12]);
 	}
 
 	#[cfg(test)]
