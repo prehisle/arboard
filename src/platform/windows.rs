@@ -283,7 +283,7 @@ mod image_data {
 	}
 
 	#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-	enum Dibv5AlphaFormat {
+	pub(super) enum Dibv5AlphaFormat {
 		Present,
 		Missing,
 		Unknown,
@@ -303,7 +303,7 @@ mod image_data {
 		}
 	}
 
-	fn repair_missing_alpha(bytes: &mut [u8], alpha_format: Dibv5AlphaFormat) -> bool {
+	pub(super) fn repair_missing_alpha(bytes: &mut [u8], alpha_format: Dibv5AlphaFormat) -> bool {
 		match alpha_format {
 			Dibv5AlphaFormat::Present => false,
 			Dibv5AlphaFormat::Missing => set_alpha_opaque(bytes),
@@ -407,7 +407,7 @@ mod image_data {
 	/// Safety: the `bytes` slice must have a length that's a multiple of 4
 	#[allow(clippy::identity_op, clippy::erasing_op)]
 	#[must_use]
-	unsafe fn rgba_to_win(bytes: &mut [u8]) -> Cow<'_, [u8]> {
+	pub(super) unsafe fn rgba_to_win(bytes: &mut [u8]) -> Cow<'_, [u8]> {
 		// Check safety invariants to catch obvious bugs.
 		debug_assert_eq!(bytes.len() % 4, 0);
 
@@ -466,7 +466,7 @@ mod image_data {
 	/// Safety: the `bytes` slice must have a length that's a multiple of 4
 	#[allow(clippy::identity_op, clippy::erasing_op)]
 	#[must_use]
-	unsafe fn win_to_rgba(bytes: &mut [u8]) -> Vec<u8> {
+	pub(super) unsafe fn win_to_rgba(bytes: &mut [u8]) -> Vec<u8> {
 		// Check safety invariants to catch obvious bugs.
 		debug_assert_eq!(bytes.len() % 4, 0);
 
@@ -516,114 +516,6 @@ mod image_data {
 				.map(|chunk| u32::from_ne_bytes(chunk.try_into().unwrap()))
 				.collect();
 			ImageDataCow::Owned(u32pixels_buffer)
-		}
-	}
-
-	#[cfg(test)]
-	mod tests {
-		use super::*;
-
-		#[test]
-		fn conversion_between_win_and_rgba() {
-			const DATA: [u8; 16] =
-				[100, 100, 255, 100, 0, 0, 0, 255, 255, 100, 100, 255, 100, 255, 100, 100];
-
-			let mut data = DATA;
-			let _converted = unsafe { win_to_rgba(&mut data) };
-
-			let mut data = DATA;
-			let _converted = unsafe { rgba_to_win(&mut data) };
-
-			let mut data = DATA;
-			let _converted = unsafe { win_to_rgba(&mut data) };
-			let _converted = unsafe { rgba_to_win(&mut data) };
-			assert_eq!(data, DATA);
-
-			let mut data = DATA;
-			let _converted = unsafe { rgba_to_win(&mut data) };
-			let _converted = unsafe { win_to_rgba(&mut data) };
-			assert_eq!(data, DATA);
-		}
-
-		#[test]
-		fn falls_back_to_pixel_heuristic_when_header_is_unknown() {
-			let mut data = [255, 255, 255, 0, 20, 30, 40, 0, 0, 0, 0, 0];
-
-			assert!(repair_missing_alpha(&mut data, Dibv5AlphaFormat::Unknown));
-			assert_eq!(data, [255, 255, 255, 255, 20, 30, 40, 255, 0, 0, 0, 255]);
-		}
-
-		fn dibv5_test_data(
-			width: usize,
-			height: usize,
-			compression: i32,
-			alpha_mask: u32,
-			pixels: &[u8],
-		) -> Vec<u8> {
-			let header = BITMAPV5HEADER {
-				bV5Size: size_of::<BITMAPV5HEADER>() as u32,
-				bV5Width: width as i32,
-				bV5Height: height as i32,
-				bV5Planes: 1,
-				bV5BitCount: 32,
-				bV5Compression: compression,
-				bV5SizeImage: pixels.len() as u32,
-				bV5XPelsPerMeter: 0,
-				bV5YPelsPerMeter: 0,
-				bV5ClrUsed: 0,
-				bV5ClrImportant: 0,
-				bV5RedMask: if compression == BI_BITFIELDS { 0x00ff0000 } else { 0 },
-				bV5GreenMask: if compression == BI_BITFIELDS { 0x0000ff00 } else { 0 },
-				bV5BlueMask: if compression == BI_BITFIELDS { 0x000000ff } else { 0 },
-				bV5AlphaMask: alpha_mask,
-				bV5CSType: 0,
-				// SAFETY: Windows ignores this field because `bV5CSType` is not set to `LCS_CALIBRATED_RGB`.
-				bV5Endpoints: unsafe { std::mem::zeroed() },
-				bV5GammaRed: 0,
-				bV5GammaGreen: 0,
-				bV5GammaBlue: 0,
-				bV5Intent: LCS_GM_IMAGES as u32,
-				bV5ProfileData: 0,
-				bV5ProfileSize: 0,
-				bV5Reserved: 0,
-			};
-
-			let header_bytes = unsafe {
-				std::slice::from_raw_parts(
-					(&header as *const BITMAPV5HEADER) as *const u8,
-					size_of::<BITMAPV5HEADER>(),
-				)
-			};
-
-			let mut data = Vec::with_capacity(header_bytes.len() + pixels.len());
-			data.extend_from_slice(header_bytes);
-			data.extend_from_slice(pixels);
-			data
-		}
-
-		#[test]
-		fn read_cf_dibv5_repairs_all_black_missing_alpha() {
-			let data = dibv5_test_data(2, 1, BI_RGB, 0, &[0, 0, 0, 0, 0, 0, 0, 0]);
-			let ImageData::Rgba(image) = read_cf_dibv5(&data).unwrap() else {
-				panic!("expected RGBA image");
-			};
-
-			assert_eq!(image.width, 2);
-			assert_eq!(image.height, 1);
-			assert_eq!(image.bytes.as_ref(), &[0, 0, 0, 255, 0, 0, 0, 255]);
-		}
-
-		#[test]
-		fn read_cf_dibv5_preserves_declared_transparency() {
-			let data =
-				dibv5_test_data(2, 1, BI_BITFIELDS, 0xff000000, &[0, 0, 255, 0, 0, 255, 0, 0]);
-			let ImageData::Rgba(image) = read_cf_dibv5(&data).unwrap() else {
-				panic!("expected RGBA image");
-			};
-
-			assert_eq!(image.width, 2);
-			assert_eq!(image.height, 1);
-			assert_eq!(image.bytes.as_ref(), &[255, 0, 0, 0, 0, 255, 0, 0]);
 		}
 	}
 }
@@ -1293,4 +1185,116 @@ fn wrap_html(ctn: &str) -> String {
 		ctn,
 		c_end_frag,
 	)
+}
+
+#[cfg(test)]
+mod tests {
+	use super::image_data::{
+		read_cf_dibv5, repair_missing_alpha, rgba_to_win, win_to_rgba, Dibv5AlphaFormat,
+	};
+	use crate::common::ImageData;
+	use std::mem::size_of;
+	use windows_sys::Win32::Graphics::Gdi::{BITMAPV5HEADER, BI_BITFIELDS, BI_RGB, LCS_GM_IMAGES};
+
+	#[test]
+	fn conversion_between_win_and_rgba() {
+		const DATA: [u8; 16] =
+			[100, 100, 255, 100, 0, 0, 0, 255, 255, 100, 100, 255, 100, 255, 100, 100];
+
+		let mut data = DATA;
+		let _converted = unsafe { win_to_rgba(&mut data) };
+
+		let mut data = DATA;
+		let _converted = unsafe { rgba_to_win(&mut data) };
+
+		let mut data = DATA;
+		let _converted = unsafe { win_to_rgba(&mut data) };
+		let _converted = unsafe { rgba_to_win(&mut data) };
+		assert_eq!(data, DATA);
+
+		let mut data = DATA;
+		let _converted = unsafe { rgba_to_win(&mut data) };
+		let _converted = unsafe { win_to_rgba(&mut data) };
+		assert_eq!(data, DATA);
+	}
+
+	#[test]
+	fn falls_back_to_pixel_heuristic_when_header_is_unknown() {
+		let mut data = [255, 255, 255, 0, 20, 30, 40, 0, 0, 0, 0, 0];
+
+		assert!(repair_missing_alpha(&mut data, Dibv5AlphaFormat::Unknown));
+		assert_eq!(data, [255, 255, 255, 255, 20, 30, 40, 255, 0, 0, 0, 255]);
+	}
+
+	fn dibv5_test_data(
+		width: usize,
+		height: usize,
+		compression: i32,
+		alpha_mask: u32,
+		pixels: &[u8],
+	) -> Vec<u8> {
+		let header = BITMAPV5HEADER {
+			bV5Size: size_of::<BITMAPV5HEADER>() as u32,
+			bV5Width: width as i32,
+			bV5Height: height as i32,
+			bV5Planes: 1,
+			bV5BitCount: 32,
+			bV5Compression: compression,
+			bV5SizeImage: pixels.len() as u32,
+			bV5XPelsPerMeter: 0,
+			bV5YPelsPerMeter: 0,
+			bV5ClrUsed: 0,
+			bV5ClrImportant: 0,
+			bV5RedMask: if compression == BI_BITFIELDS { 0x00ff0000 } else { 0 },
+			bV5GreenMask: if compression == BI_BITFIELDS { 0x0000ff00 } else { 0 },
+			bV5BlueMask: if compression == BI_BITFIELDS { 0x000000ff } else { 0 },
+			bV5AlphaMask: alpha_mask,
+			bV5CSType: 0,
+			// SAFETY: Windows ignores this field because `bV5CSType` is not set to `LCS_CALIBRATED_RGB`.
+			bV5Endpoints: unsafe { std::mem::zeroed() },
+			bV5GammaRed: 0,
+			bV5GammaGreen: 0,
+			bV5GammaBlue: 0,
+			bV5Intent: LCS_GM_IMAGES as u32,
+			bV5ProfileData: 0,
+			bV5ProfileSize: 0,
+			bV5Reserved: 0,
+		};
+
+		let header_bytes = unsafe {
+			std::slice::from_raw_parts(
+				(&header as *const BITMAPV5HEADER) as *const u8,
+				size_of::<BITMAPV5HEADER>(),
+			)
+		};
+
+		let mut data = Vec::with_capacity(header_bytes.len() + pixels.len());
+		data.extend_from_slice(header_bytes);
+		data.extend_from_slice(pixels);
+		data
+	}
+
+	#[test]
+	fn read_cf_dibv5_repairs_all_black_missing_alpha() {
+		let data = dibv5_test_data(2, 1, BI_RGB, 0, &[0, 0, 0, 0, 0, 0, 0, 0]);
+		let ImageData::Rgba(image) = read_cf_dibv5(&data).unwrap() else {
+			panic!("expected RGBA image");
+		};
+
+		assert_eq!(image.width, 2);
+		assert_eq!(image.height, 1);
+		assert_eq!(image.bytes.as_ref(), &[0, 0, 0, 255, 0, 0, 0, 255]);
+	}
+
+	#[test]
+	fn read_cf_dibv5_preserves_declared_transparency() {
+		let data = dibv5_test_data(2, 1, BI_BITFIELDS, 0xff000000, &[0, 0, 255, 0, 0, 255, 0, 0]);
+		let ImageData::Rgba(image) = read_cf_dibv5(&data).unwrap() else {
+			panic!("expected RGBA image");
+		};
+
+		assert_eq!(image.width, 2);
+		assert_eq!(image.height, 1);
+		assert_eq!(image.bytes.as_ref(), &[255, 0, 0, 0, 0, 255, 0, 0]);
+	}
 }
