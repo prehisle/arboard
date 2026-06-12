@@ -22,7 +22,6 @@ const CFSTR_MIME_RICHTEXT: &str = "text/richtext";
 const CFSTR_MIME_PNG: &str = "image/png";
 const CFSTR_MIME_SVG_XML: &str = "image/svg+xml";
 
-
 // If there're multiple threads or processes trying to access the clipboard at the same time,
 // the previous clipboard owner will fail to access the clipboard.
 // This is a common issue on Windows, so we just return `ClipboardOccupied` in this case.
@@ -564,10 +563,7 @@ mod image_data {
 		let mut data = [255, 255, 255, 0, 20, 30, 40, 0, 0, 0, 0, 0];
 
 		assert!(repair_missing_alpha(&mut data, Dibv5AlphaFormat::Unknown));
-		assert_eq!(
-			data,
-			[255, 255, 255, 255, 20, 30, 40, 255, 0, 0, 0, 255]
-		);
+		assert_eq!(data, [255, 255, 255, 255, 20, 30, 40, 255, 0, 0, 0, 255]);
 	}
 
 	#[test]
@@ -638,7 +634,9 @@ mod image_data {
 	#[test]
 	fn read_cf_dibv5_repairs_all_black_missing_alpha() {
 		let data = test_dibv5(2, 1, BI_RGB, 0, &[0, 0, 0, 0, 0, 0, 0, 0]);
-		let image = read_cf_dibv5(&data).unwrap();
+		let ImageData::Rgba(image) = read_cf_dibv5(&data).unwrap() else {
+			panic!("expected RGBA image");
+		};
 
 		assert_eq!(image.width, 2);
 		assert_eq!(image.height, 1);
@@ -647,14 +645,10 @@ mod image_data {
 
 	#[test]
 	fn read_cf_dibv5_preserves_declared_transparency() {
-		let data = test_dibv5(
-			2,
-			1,
-			BI_BITFIELDS,
-			0xff000000,
-			&[0, 0, 255, 0, 0, 255, 0, 0],
-		);
-		let image = read_cf_dibv5(&data).unwrap();
+		let data = test_dibv5(2, 1, BI_BITFIELDS, 0xff000000, &[0, 0, 255, 0, 0, 255, 0, 0]);
+		let ImageData::Rgba(image) = read_cf_dibv5(&data).unwrap() else {
+			panic!("expected RGBA image");
+		};
 
 		assert_eq!(image.width, 2);
 		assert_eq!(image.height, 1);
