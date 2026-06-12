@@ -276,26 +276,74 @@ mod image_data {
 			result_bytes.set_len(read_len);
 
 			let mut result_bytes = win_to_rgba(&mut result_bytes);
-			repair_missing_alpha_if_opaque_rgb(&mut result_bytes);
+			repair_missing_alpha(&mut result_bytes, dibv5_alpha_format(header));
 
 			let result = ImageData::rgba(w as _, h as _, Cow::Owned(result_bytes));
 			Ok(result)
 		}
 	}
 
+	#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+	enum Dibv5AlphaFormat {
+		Present,
+		Missing,
+		Unknown,
+	}
+
+	fn dibv5_alpha_format(header: &BITMAPV5HEADER) -> Dibv5AlphaFormat {
+		// Some applications set bV5AlphaMask even with BI_RGB, despite the docs
+		// saying the high byte is unused for BI_RGB. Preserve alpha whenever the
+		// producer explicitly provides an alpha mask.
+		if header.bV5AlphaMask != 0 {
+			return Dibv5AlphaFormat::Present;
+		}
+
+		match header.bV5Compression {
+			BI_RGB | BI_BITFIELDS => Dibv5AlphaFormat::Missing,
+			_ => Dibv5AlphaFormat::Unknown,
+		}
+	}
+
+	fn repair_missing_alpha(bytes: &mut [u8], alpha_format: Dibv5AlphaFormat) -> bool {
+		match alpha_format {
+			Dibv5AlphaFormat::Present => false,
+			Dibv5AlphaFormat::Missing => set_alpha_opaque(bytes),
+			Dibv5AlphaFormat::Unknown => repair_missing_alpha_if_opaque_rgb(bytes),
+		}
+	}
+
+	fn set_alpha_opaque(bytes: &mut [u8]) -> bool {
+		debug_assert_eq!(bytes.len() % 4, 0);
+
+		let mut changed = false;
+		for pixel in bytes.chunks_exact_mut(4) {
+			changed |= pixel[3] != 255;
+			pixel[3] = 255;
+		}
+
+		changed
+	}
+
 	/// Some Windows screenshot tools put 32-bit DIB data on the clipboard with
 	/// the alpha byte left as zero for every pixel even though the RGB channels
-	/// contain the visible screenshot. Treat that as missing alpha rather than
-	/// as an intentionally fully transparent image.
+	/// contain the visible screenshot. Use this only when the DIBV5 header does
+	/// not tell us whether the alpha channel is present.
 	fn repair_missing_alpha_if_opaque_rgb(bytes: &mut [u8]) -> bool {
 		debug_assert_eq!(bytes.len() % 4, 0);
 
-		let has_rgb_content = bytes
-			.chunks_exact(4)
-			.any(|pixel| pixel[0] != 0 || pixel[1] != 0 || pixel[2] != 0);
-		let all_alpha_zero = bytes.chunks_exact(4).all(|pixel| pixel[3] == 0);
+		let mut has_rgb_content = false;
+		let mut has_alpha_content = false;
 
-		if has_rgb_content && all_alpha_zero {
+		for pixel in bytes.chunks_exact(4) {
+			has_rgb_content |= pixel[0] != 0 || pixel[1] != 0 || pixel[2] != 0;
+			has_alpha_content |= pixel[3] != 0;
+
+			if has_rgb_content && has_alpha_content {
+				return false;
+			}
+		}
+
+		if has_rgb_content && !has_alpha_content {
 			for pixel in bytes.chunks_exact_mut(4) {
 				pixel[3] = 255;
 			}
@@ -495,10 +543,27 @@ mod image_data {
 	}
 
 	#[test]
-	fn repairs_missing_alpha_when_rgb_has_content() {
+	fn repairs_missing_alpha_when_header_has_no_alpha() {
+		let mut data = [0, 0, 0, 0, 20, 30, 40, 0];
+
+		assert!(repair_missing_alpha(&mut data, Dibv5AlphaFormat::Missing));
+		assert_eq!(data, [0, 0, 0, 255, 20, 30, 40, 255]);
+	}
+
+	#[test]
+	fn preserves_real_transparency_when_header_declares_alpha() {
+		let mut data = [255, 0, 0, 0, 0, 255, 0, 0];
+		let before = data;
+
+		assert!(!repair_missing_alpha(&mut data, Dibv5AlphaFormat::Present));
+		assert_eq!(data, before);
+	}
+
+	#[test]
+	fn falls_back_to_pixel_heuristic_when_header_is_unknown() {
 		let mut data = [255, 255, 255, 0, 20, 30, 40, 0, 0, 0, 0, 0];
 
-		assert!(repair_missing_alpha_if_opaque_rgb(&mut data));
+		assert!(repair_missing_alpha(&mut data, Dibv5AlphaFormat::Unknown));
 		assert_eq!(
 			data,
 			[255, 255, 255, 255, 20, 30, 40, 255, 0, 0, 0, 255]
@@ -506,7 +571,7 @@ mod image_data {
 	}
 
 	#[test]
-	fn preserves_real_transparency() {
+	fn pixel_heuristic_preserves_real_transparency() {
 		let mut data = [255, 0, 0, 0, 0, 255, 0, 128, 0, 0, 255, 255];
 		let before = data;
 
@@ -515,11 +580,85 @@ mod image_data {
 	}
 
 	#[test]
-	fn preserves_fully_empty_pixels() {
+	fn pixel_heuristic_preserves_fully_empty_pixels() {
 		let mut data = [0; 12];
 
 		assert!(!repair_missing_alpha_if_opaque_rgb(&mut data));
 		assert_eq!(data, [0; 12]);
+	}
+
+	fn test_dibv5(
+		width: usize,
+		height: usize,
+		compression: i32,
+		alpha_mask: u32,
+		pixels: &[u8],
+	) -> Vec<u8> {
+		let header = BITMAPV5HEADER {
+			bV5Size: size_of::<BITMAPV5HEADER>() as u32,
+			bV5Width: width as i32,
+			bV5Height: height as i32,
+			bV5Planes: 1,
+			bV5BitCount: 32,
+			bV5Compression: compression,
+			bV5SizeImage: pixels.len() as u32,
+			bV5XPelsPerMeter: 0,
+			bV5YPelsPerMeter: 0,
+			bV5ClrUsed: 0,
+			bV5ClrImportant: 0,
+			bV5RedMask: if compression == BI_BITFIELDS { 0x00ff0000 } else { 0 },
+			bV5GreenMask: if compression == BI_BITFIELDS { 0x0000ff00 } else { 0 },
+			bV5BlueMask: if compression == BI_BITFIELDS { 0x000000ff } else { 0 },
+			bV5AlphaMask: alpha_mask,
+			bV5CSType: 0,
+			// SAFETY: Windows ignores this field because `bV5CSType` is not set to `LCS_CALIBRATED_RGB`.
+			bV5Endpoints: unsafe { std::mem::zeroed() },
+			bV5GammaRed: 0,
+			bV5GammaGreen: 0,
+			bV5GammaBlue: 0,
+			bV5Intent: LCS_GM_IMAGES as u32,
+			bV5ProfileData: 0,
+			bV5ProfileSize: 0,
+			bV5Reserved: 0,
+		};
+
+		let header_bytes = unsafe {
+			std::slice::from_raw_parts(
+				(&header as *const BITMAPV5HEADER) as *const u8,
+				size_of::<BITMAPV5HEADER>(),
+			)
+		};
+
+		let mut data = Vec::with_capacity(header_bytes.len() + pixels.len());
+		data.extend_from_slice(header_bytes);
+		data.extend_from_slice(pixels);
+		data
+	}
+
+	#[test]
+	fn read_cf_dibv5_repairs_all_black_missing_alpha() {
+		let data = test_dibv5(2, 1, BI_RGB, 0, &[0, 0, 0, 0, 0, 0, 0, 0]);
+		let image = read_cf_dibv5(&data).unwrap();
+
+		assert_eq!(image.width, 2);
+		assert_eq!(image.height, 1);
+		assert_eq!(image.bytes.as_ref(), &[0, 0, 0, 255, 0, 0, 0, 255]);
+	}
+
+	#[test]
+	fn read_cf_dibv5_preserves_declared_transparency() {
+		let data = test_dibv5(
+			2,
+			1,
+			BI_BITFIELDS,
+			0xff000000,
+			&[0, 0, 255, 0, 0, 255, 0, 0],
+		);
+		let image = read_cf_dibv5(&data).unwrap();
+
+		assert_eq!(image.width, 2);
+		assert_eq!(image.height, 1);
+		assert_eq!(image.bytes.as_ref(), &[255, 0, 0, 0, 0, 255, 0, 0]);
 	}
 }
 
